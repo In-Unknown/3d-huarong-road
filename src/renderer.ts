@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { Vec3, BlockDef, CanvasDirection, BlockMeshData } from './types';
+import type { Vec3, BlockDef, CanvasDirection, BlockMeshData, ExitDef } from './types';
 
 // 生成网格贴图（房间背景）
 export function createGridTexture(renderer: THREE.WebGLRenderer) {
@@ -62,26 +62,88 @@ export function createCanvasTexture(baseColor: number, dirs: CanvasDirection[], 
     return tex;
 }
 
-// 创建房间网格
-export function createRoom(scene: THREE.Scene, bounds: Vec3, renderer: THREE.WebGLRenderer) {
+// 创建房间网格（带出口孔洞）
+export function createRoom(scene: THREE.Scene, bounds: Vec3, exits: ExitDef[], renderer: THREE.WebGLRenderer) {
     const ROOM_EXPANSION = 0.2;
     const gridTex = createGridTexture(renderer);
-    const repeats = [
-        [bounds.z + ROOM_EXPANSION, bounds.y + ROOM_EXPANSION], [bounds.z + ROOM_EXPANSION, bounds.y + ROOM_EXPANSION],
-        [bounds.x + ROOM_EXPANSION, bounds.z + ROOM_EXPANSION], [bounds.x + ROOM_EXPANSION, bounds.z + ROOM_EXPANSION],
-        [bounds.x + ROOM_EXPANSION, bounds.y + ROOM_EXPANSION], [bounds.x + ROOM_EXPANSION, bounds.y + ROOM_EXPANSION]
+
+    const wallConfigs = [
+        { normal: [1, 0, 0], axis1: 'z', axis2: 'y', size1: bounds.z, size2: bounds.y, pos: [bounds.x - 0.5, bounds.y / 2 - 0.5, bounds.z / 2 - 0.5], rot: [0, Math.PI / 2, 0] },
+        { normal: [-1, 0, 0], axis1: 'z', axis2: 'y', size1: bounds.z, size2: bounds.y, pos: [-0.5, bounds.y / 2 - 0.5, bounds.z / 2 - 0.5], rot: [0, -Math.PI / 2, 0] },
+        { normal: [0, 1, 0], axis1: 'x', axis2: 'z', size1: bounds.x, size2: bounds.z, pos: [bounds.x / 2 - 0.5, bounds.y - 0.5, bounds.z / 2 - 0.5], rot: [-Math.PI / 2, 0, 0] },
+        { normal: [0, -1, 0], axis1: 'x', axis2: 'z', size1: bounds.x, size2: bounds.z, pos: [bounds.x / 2 - 0.5, -0.5, bounds.z / 2 - 0.5], rot: [Math.PI / 2, 0, 0] },
+        { normal: [0, 0, 1], axis1: 'x', axis2: 'y', size1: bounds.x, size2: bounds.y, pos: [bounds.x / 2 - 0.5, bounds.y / 2 - 0.5, bounds.z - 0.5], rot: [0, 0, 0] },
+        { normal: [0, 0, -1], axis1: 'x', axis2: 'y', size1: bounds.x, size2: bounds.y, pos: [bounds.x / 2 - 0.5, bounds.y / 2 - 0.5, -0.5], rot: [0, Math.PI, 0] }
     ];
-    const materials = repeats.map(r => {
-        const t = gridTex.clone(); t.repeat.set(r[0], r[1]);
-        t.offset.set(-ROOM_EXPANSION / 2 / r[0], -ROOM_EXPANSION / 2 / r[1]);
+
+    const roomGroup = new THREE.Group();
+
+    wallConfigs.forEach((cfg, wallIndex) => {
+        const wallExits = exits.filter(e => e.wall === wallIndex);
+        const exitCells = new Set<string>();
+        wallExits.forEach(e => {
+            e.cells.forEach(c => exitCells.add(`${c.x},${c.y},${c.z}`));
+        });
+
+        const faceGeos: THREE.BufferGeometry[] = [];
+
+        for (let i = 0; i < cfg.size1; i++) {
+            for (let j = 0; j < cfg.size2; j++) {
+                let cellKey: string;
+                if (wallIndex === 0) cellKey = `${bounds.x - 1 - i},${j},${0}`;
+                else if (wallIndex === 1) cellKey = `${i},${j},${0}`;
+                else if (wallIndex === 2) cellKey = `${i},${bounds.y - 1 - j},${0}`;
+                else if (wallIndex === 3) cellKey = `${i},${j},${0}`;
+                else if (wallIndex === 4) cellKey = `${i},${j},${0}`;
+                else cellKey = `${bounds.x - 1 - i},${j},${0}`;
+
+                if (exitCells.has(cellKey)) continue;
+
+                const plane = new THREE.PlaneGeometry(1, 1);
+
+                // 手动偏移 UV 坐标，确保网格线在整面墙上铺开而不是每个格子重复
+                const uvAttribute = plane.attributes.uv;
+                const uvOffsetX = i / cfg.size1;
+                const uvOffsetY = j / cfg.size2;
+                const uvScaleX = 1 / cfg.size1;
+                const uvScaleY = 1 / cfg.size2;
+
+                for (let k = 0; k < uvAttribute.count; k++) {
+                    uvAttribute.setXY(k,
+                        uvOffsetX + uvAttribute.getX(k) * uvScaleX,
+                        uvOffsetY + uvAttribute.getY(k) * uvScaleY
+                    );
+                }
+
+                const offset1 = i - cfg.size1 / 2 + 0.5;
+                const offset2 = j - cfg.size2 / 2 + 0.5;
+
+                plane.translate(offset1, offset2, 0);
+                plane.rotateX(cfg.rot[0]);
+                plane.rotateY(cfg.rot[1]);
+                plane.rotateZ(cfg.rot[2]);
+                plane.translate(cfg.pos[0], cfg.pos[1], cfg.pos[2]);
+
+                faceGeos.push(plane);
+            }
+        }
+
+        const t = gridTex.clone();
+        t.repeat.set(cfg.size1 + ROOM_EXPANSION, cfg.size2 + ROOM_EXPANSION);
+        t.offset.set(-ROOM_EXPANSION / 2 / (cfg.size1 + ROOM_EXPANSION), -ROOM_EXPANSION / 2 / (cfg.size2 + ROOM_EXPANSION));
         t.needsUpdate = true;
-        return new THREE.MeshStandardMaterial({ map: t, side: THREE.BackSide, roughness: 1, transparent: true, opacity: 0.9 });
+
+        const mat = new THREE.MeshStandardMaterial({ map: t, side: THREE.BackSide, roughness: 1, transparent: true, opacity: 0.9 });
+
+        if (faceGeos.length > 0) {
+            const wallGeo = BufferGeometryUtils.mergeGeometries(faceGeos);
+            const wallMesh = new THREE.Mesh(wallGeo, mat);
+            wallMesh.raycast = () => { };
+            roomGroup.add(wallMesh);
+        }
     });
-    const roomGeo = new THREE.BoxGeometry(bounds.x + ROOM_EXPANSION, bounds.y + ROOM_EXPANSION, bounds.z + ROOM_EXPANSION);
-    const roomMesh = new THREE.Mesh(roomGeo, materials);
-    roomMesh.position.set(bounds.x / 2 - 0.5, bounds.y / 2 - 0.5, bounds.z / 2 - 0.5);
-    roomMesh.raycast = () => { };
-    scene.add(roomMesh);
+
+    scene.add(roomGroup);
 }
 
 // 创建所有方块的 mesh，返回映射表

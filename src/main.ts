@@ -2,12 +2,12 @@ import './style.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import * as TWEEN from '@tweenjs/tween.js';
-import { LEVEL_BOUNDS, LEVEL_BLOCKS } from './data';
+import { LEVEL_BOUNDS, LEVEL_BLOCKS, LEVEL_EXITS } from './data';
 import { GameLogic } from './logic';
 import { createRoom, createBlocks, updateSelectionVisuals, resetHover } from './renderer';
 
 // 1. 初始化游戏逻辑
-const logic = new GameLogic(LEVEL_BOUNDS, LEVEL_BLOCKS);
+const logic = new GameLogic(LEVEL_BOUNDS, LEVEL_BLOCKS, LEVEL_EXITS);
 
 // --- 全局状态变量 ---
 let selectedBlockId: string | null = null;
@@ -35,7 +35,7 @@ controls.panSpeed = 1.0;
 controls.update();
 
 // 3. 构建场景内容
-createRoom(scene, LEVEL_BOUNDS, renderer);
+createRoom(scene, LEVEL_BOUNDS, LEVEL_EXITS, renderer);
 const blockMeshes = createBlocks(LEVEL_BLOCKS, scene, renderer);
 
 // 4. 交互逻辑
@@ -103,11 +103,14 @@ window.addEventListener('pointerup', (event) => {
                 // Shift 长距离滑动
                 if (event.shiftKey) {
                     let moveCount = 0;
+                    // 限制：最多移动到完全出去为止
                     while (logic.canMove(block, dx, dy, dz)) {
                         block.position.x += dx;
                         block.position.y += dy;
                         block.position.z += dz;
                         moveCount++;
+                        // 如果这一步走完已经全出去了，直接跳出循环
+                        if (logic.checkBlockExited(block)) break;
                     }
 
                     const duration = Math.max(200, moveCount * 80);
@@ -116,8 +119,12 @@ window.addEventListener('pointerup', (event) => {
                         .to({ x: block.position.x, y: block.position.y, z: block.position.z }, duration)
                         .easing(TWEEN.Easing.Quadratic.Out)
                         .onComplete(() => {
-                            isAnimating = false;
-                            checkVictory();
+                            if (logic.checkBlockExited(block)) {
+                                removeBlockAfterExit(block.id);
+                            } else {
+                                isAnimating = false;
+                                checkVictory();
+                            }
                         }).start();
                 } else {
                     // 标准单步移动
@@ -129,8 +136,12 @@ window.addEventListener('pointerup', (event) => {
                         .to({ x: block.position.x, y: block.position.y, z: block.position.z }, 200)
                         .easing(TWEEN.Easing.Quadratic.Out)
                         .onComplete(() => {
-                            isAnimating = false;
-                            checkVictory();
+                            if (logic.checkBlockExited(block)) {
+                                removeBlockAfterExit(block.id);
+                            } else {
+                                isAnimating = false;
+                                checkVictory();
+                            }
                         }).start();
                 }
             } else {
@@ -151,6 +162,54 @@ function checkVictory() {
     if (logic.checkVictory()) {
         setTimeout(() => alert('全目标达成！'), 100);
     }
+}
+
+function removeBlockAfterExit(blockId: string) {
+    const block = logic.blocks.find(b => b.id === blockId);
+    if (!block) return;
+
+    const meshData = blockMeshes.get(blockId);
+    if (!meshData) return;
+
+    const group = meshData.group;
+    const normal = new THREE.Vector3(0, 0, 0);
+
+    block.cells.forEach(cell => {
+        const x = block.position.x + cell.x;
+        const y = block.position.y + cell.y;
+        const z = block.position.z + cell.z;
+        if (x < 0) normal.x -= 1;
+        if (x >= LEVEL_BOUNDS.x) normal.x += 1;
+        if (y < 0) normal.y -= 1;
+        if (y >= LEVEL_BOUNDS.y) normal.y += 1;
+        if (z < 0) normal.z -= 1;
+        if (z >= LEVEL_BOUNDS.z) normal.z += 1;
+    });
+
+    // 保护：如果 normal 长度为 0，避免 normalize() 返回 NaN
+    if (normal.lengthSq() > 0) {
+        normal.normalize().multiplyScalar(10);
+    } else {
+        normal.set(1, 0, 0).multiplyScalar(10); // 默认飞向 +X 方向
+    }
+
+    new TWEEN.Tween(group.position)
+        .to({
+            x: group.position.x + normal.x,
+            y: group.position.y + normal.y,
+            z: group.position.z + normal.z
+        }, 500)
+        .easing(TWEEN.Easing.Quadratic.In)
+        .onComplete(() => {
+            scene.remove(group);
+            if (meshData.ghost) scene.remove(meshData.ghost);
+            blockMeshes.delete(blockId);
+            logic.removeBlock(blockId);
+            selectedBlockId = null;
+            isAnimating = false;
+            checkVictory();
+        })
+        .start();
 }
 
 // 5. 窗口尺寸响应

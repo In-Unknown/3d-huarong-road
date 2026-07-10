@@ -19,3 +19,10 @@ export interface BlockMeshData {
     edges: THREE.LineSegments;
     ghost?: THREE.Group;
 }
+
+export type WallFace = 0 | 1 | 2 | 3 | 4 | 5;
+
+export interface ExitDef {
+    wall: WallFace;
+    cells: Vec3[];
+}
