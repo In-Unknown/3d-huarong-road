@@ -12,5 +12,16 @@ export const LEVEL_BLOCKS: BlockDef[] = [
 ];
 
 export const LEVEL_EXITS: ExitDef[] = [
-    { wall: 4, cells: [{ x: 1, y: 1, z: 0 }, { x: 2, y: 1, z: 0 }, { x: 1, y: 2, z: 0 }, { x: 2, y: 2, z: 0 }] }
+    // +X 面（右侧墙）
+    { wall: 0, cells: [{ u: 1, v: 1 }, { u: 2, v: 1 }, { u: 1, v: 2 }, { u: 2, v: 2 }] },
+    // -X 面（左侧墙）
+    { wall: 1, cells: [{ u: 1, v: 1 }, { u: 2, v: 1 }, { u: 1, v: 2 }, { u: 2, v: 2 }] },
+    // +Y 面（顶部墙）
+    { wall: 2, cells: [{ u: 1, v: 1 }, { u: 2, v: 1 }, { u: 1, v: 2 }, { u: 2, v: 2 }] },
+    // -Y 面（底部墙）
+    { wall: 3, cells: [{ u: 1, v: 1 }, { u: 2, v: 1 }, { u: 1, v: 2 }, { u: 2, v: 2 }] },
+    // +Z 面（前墙）
+    { wall: 4, cells: [{ u: 1, v: 1 }, { u: 2, v: 1 }, { u: 1, v: 2 }, { u: 2, v: 2 }] },
+    // -Z 面（后墙）
+    { wall: 5, cells: [{ u: 1, v: 1 }, { u: 2, v: 1 }, { u: 1, v: 2 }, { u: 2, v: 2 }] }
 ];

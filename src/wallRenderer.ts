@@ -85,16 +85,8 @@ export function createRoom(scene: THREE.Scene, bounds: Vec3, exits: ExitDef[]): 
         // 构建孔洞格子集合（使用墙面局部坐标）
         wallExits.forEach(exit => {
             exit.cells.forEach(cell => {
-                // 将世界坐标转换为墙面局部坐标(u,v)
-                let u: number, v: number;
-                if (cfg.wall === 0) { u = bounds.z - 1 - cell.x; v = cell.y; }
-                else if (cfg.wall === 1) { u = cell.x; v = cell.y; }
-                else if (cfg.wall === 2) { u = cell.x; v = bounds.z - 1 - cell.z; }
-                else if (cfg.wall === 3) { u = cell.x; v = cell.z; }
-                else if (cfg.wall === 4) { u = cell.x; v = cell.y; }
-                else { u = bounds.x - 1 - cell.x; v = cell.y; }
-
-                exitSet.add(`${u},${v}`);
+                // ExitDef 直接使用墙面局部坐标(u,v)，无需转换
+                exitSet.add(`${cell.u},${cell.v}`);
             });
         });
 

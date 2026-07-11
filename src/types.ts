@@ -22,9 +22,15 @@ export interface BlockMeshData {
 
 export type WallFace = 0 | 1 | 2 | 3 | 4 | 5;
 
+// 墙面局部坐标（用于出口定义）
+export interface WallCellCoord {
+    u: number;  // 墙面局部坐标 u
+    v: number;  // 墙面局部坐标 v
+}
+
 export interface ExitDef {
     wall: WallFace;
-    cells: Vec3[];
+    cells: WallCellCoord[];  // 使用墙面局部坐标
 }
 
 // 墙面格子定义（用于格子化墙面渲染）
