@@ -141,6 +141,109 @@ export function createRoom(scene: THREE.Scene, bounds: Vec3, exits: ExitDef[], r
             wallMesh.raycast = () => { };
             roomGroup.add(wallMesh);
         }
+
+        // 创建孔洞处的半透明蓝色面板
+        if (exitCells.size > 0) {
+            const panelMaterial = new THREE.MeshBasicMaterial({
+                color: 0x0066ff,
+                transparent: true,
+                opacity: 0.15,
+                side: THREE.DoubleSide
+            });
+
+            exitCells.forEach(key => {
+                const parts = key.split(',');
+                const exitI = parseInt(parts[0]);
+                const exitJ = parseInt(parts[1]);
+
+                // 创建孔洞面板
+                const panel = new THREE.PlaneGeometry(1, 1);
+                const offset1 = exitI - cfg.size1 / 2 + 0.5;
+                const offset2 = exitJ - cfg.size2 / 2 + 0.5;
+
+                panel.translate(offset1, offset2, 0);
+                panel.rotateX(cfg.rot[0]);
+                panel.rotateY(cfg.rot[1]);
+                panel.rotateZ(cfg.rot[2]);
+                panel.translate(cfg.pos[0], cfg.pos[1], cfg.pos[2]);
+
+                const panelMesh = new THREE.Mesh(panel, panelMaterial);
+                roomGroup.add(panelMesh);
+            });
+        }
+
+        // 创建孔洞边缘的蓝色描边（使用管道网格实现粗线条）
+        if (exitCells.size > 0) {
+            const edgeMaterial = new THREE.MeshBasicMaterial({
+                color: 0x00aaff,
+                transparent: true,
+                opacity: 0.9
+            });
+
+            exitCells.forEach(key => {
+                const parts = key.split(',');
+                const exitI = parseInt(parts[0]);
+                const exitJ = parseInt(parts[1]);
+
+                // 检查四个方向的相邻格子是否不是孔洞
+                const neighbors = [
+                    { di: 1, dj: 0 },  // 右
+                    { di: -1, dj: 0 }, // 左
+                    { di: 0, dj: 1 },  // 上
+                    { di: 0, dj: -1 }  // 下
+                ];
+
+                neighbors.forEach(n => {
+                    const neighborKey = `${exitI + n.di},${exitJ + n.dj},0`;
+                    if (!exitCells.has(neighborKey)) {
+                        // 绘制这条边
+                        const baseOffset1 = exitI - cfg.size1 / 2 + 0.5;
+                        const baseOffset2 = exitJ - cfg.size2 / 2 + 0.5;
+
+                        let p1: THREE.Vector3, p2: THREE.Vector3;
+
+                        if (n.di === 1) { // 右边
+                            p1 = new THREE.Vector3(baseOffset1 + 0.5, baseOffset2 - 0.5, 0);
+                            p2 = new THREE.Vector3(baseOffset1 + 0.5, baseOffset2 + 0.5, 0);
+                        } else if (n.di === -1) { // 左边
+                            p1 = new THREE.Vector3(baseOffset1 - 0.5, baseOffset2 - 0.5, 0);
+                            p2 = new THREE.Vector3(baseOffset1 - 0.5, baseOffset2 + 0.5, 0);
+                        } else if (n.dj === 1) { // 上边
+                            p1 = new THREE.Vector3(baseOffset1 - 0.5, baseOffset2 + 0.5, 0);
+                            p2 = new THREE.Vector3(baseOffset1 + 0.5, baseOffset2 + 0.5, 0);
+                        } else { // 下边
+                            p1 = new THREE.Vector3(baseOffset1 - 0.5, baseOffset2 - 0.5, 0);
+                            p2 = new THREE.Vector3(baseOffset1 + 0.5, baseOffset2 - 0.5, 0);
+                        }
+
+                        // 应用旋转和平移变换
+                        [p1, p2].forEach(p => {
+                            p.applyEuler(new THREE.Euler(cfg.rot[0], cfg.rot[1], cfg.rot[2]));
+                            p.add(new THREE.Vector3(cfg.pos[0], cfg.pos[1], cfg.pos[2]));
+                        });
+
+                        // 使用圆柱体管道绘制粗线条
+                        const direction = new THREE.Vector3().subVectors(p2, p1);
+                        const length = direction.length();
+                        const tubeRadius = 0.02; // 线条粗细
+
+                        const tubeGeometry = new THREE.CylinderGeometry(tubeRadius, tubeRadius, length, 6);
+                        const tubeMesh = new THREE.Mesh(tubeGeometry, edgeMaterial);
+
+                        // 定位管道
+                        const midpoint = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
+                        tubeMesh.position.copy(midpoint);
+
+                        // 旋转管道使其对齐线段方向
+                        const up = new THREE.Vector3(0, 1, 0);
+                        const quaternion = new THREE.Quaternion().setFromUnitVectors(up, direction.normalize());
+                        tubeMesh.quaternion.copy(quaternion);
+
+                        roomGroup.add(tubeMesh);
+                    }
+                });
+            });
+        }
     });
 
     scene.add(roomGroup);
