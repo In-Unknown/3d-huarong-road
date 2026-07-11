@@ -26,3 +26,17 @@ export interface ExitDef {
     wall: WallFace;
     cells: Vec3[];
 }
+
+// 墙面格子定义（用于格子化墙面渲染）
+export interface WallCellDef {
+    wall: WallFace;        // 墙面索引 (0-5: +X, -X, +Y, -Y, +Z, -Z)
+    u: number;             // 墙面局部坐标 u
+    v: number;             // 墙面局部坐标 v
+    isExit: boolean;       // 是否是出口孔洞
+}
+
+export interface WallMeshData {
+    group: THREE.Group;
+    cells: Map<string, THREE.Mesh>;  // 格子映射表 (key: "wall,u,v")
+    edges: Map<string, THREE.Mesh>; // 格子边缘映射表（使用圆柱体管道）
+}

@@ -35,7 +35,7 @@ controls.panSpeed = 1.0;
 controls.update();
 
 // 3. 构建场景内容
-createRoom(scene, LEVEL_BOUNDS, LEVEL_EXITS, renderer);
+createRoom(scene, LEVEL_BOUNDS, LEVEL_EXITS);
 const blockMeshes = createBlocks(LEVEL_BLOCKS, scene, renderer);
 
 // 4. 交互逻辑
