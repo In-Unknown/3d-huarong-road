@@ -94,62 +94,66 @@ window.addEventListener('pointerup', (event) => {
             const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).round();
             const { group } = blockMeshes.get(block.id)!;
 
-            const dx = normal.x, dy = normal.y, dz = normal.z;
-
-            if (logic.canMove(block, dx, dy, dz)) {
+            const
+                dirX = normal.x,
+                dirY = normal.y,
+                dirZ = normal.z;
+            if (logic.canMove(block, dirX, dirY, dirZ)) {
                 isAnimating = true;
                 resetHover(blockMeshes);
 
-                // Shift 长距离滑动
+                // Shift 来计算移动距离是1还是最大距离到边界
+                let moveCount: number;
                 if (event.shiftKey) {
-                    let moveCount = 0;
-                    // 限制：最多移动到完全出去为止
-                    while (logic.canMove(block, dx, dy, dz)) {
-                        block.position.x += dx;
-                        block.position.y += dy;
-                        block.position.z += dz;
-                        moveCount++;
-                        // 如果这一步走完已经全出去了，直接跳出循环
-                        if (logic.checkBlockExited(block)) break;
+                    // 扫描距离 = 方块前表面到边界的距离 + 方块宽度（允许穿出洞口）
+                    let axis: 'x' | 'y' | 'z';
+                    let sign: number;
+                    if (dirX !== 0) {
+                        axis = 'x';
+                        sign = Math.sign(dirX);
+                    } else if (dirY !== 0) {
+                        axis = 'y';
+                        sign = Math.sign(dirY);
+                    } else {
+                        axis = 'z';
+                        sign = Math.sign(dirZ);
                     }
 
-                    const duration = Math.max(200, moveCount * 80);
-
-                    new TWEEN.Tween(group.position)
-                        .to({ x: block.position.x, y: block.position.y, z: block.position.z }, duration)
-                        .easing(TWEEN.Easing.Quadratic.Out)
-                        .onComplete(() => {
-                            if (logic.checkBlockExited(block)) {
-                                removeBlockAfterExit(block.id);
-                            } else {
-                                isAnimating = false;
-                                checkVictory();
-                            }
-                        }).start();
+                    const boundSize = logic.bounds[axis];
+                    // 计算方块前表面在世界坐标中的位置
+                    const cellOffsets = block.cells.map(c => c[axis]);
+                    const frontOffset = sign > 0 ? Math.max(...cellOffsets) : Math.min(...cellOffsets);
+                    const frontWorld = block.position[axis] + frontOffset;
+                    // 前表面到边界的距离 + 1（让射线能扫到边界外检测洞口）
+                    const distToBound = sign > 0
+                        ? boundSize - frontWorld + 1
+                        : frontWorld + 1;
+                    const maxMove = logic.getMaxMoveDistance(block, dirX * distToBound, dirY * distToBound, dirZ * distToBound);
+                    moveCount = logic.moveBlock(block, maxMove[0], maxMove[1], maxMove[2]);
                 } else {
-                    // 标准单步移动
-                    block.position.x += dx;
-                    block.position.y += dy;
-                    block.position.z += dz;
-
-                    new TWEEN.Tween(group.position)
-                        .to({ x: block.position.x, y: block.position.y, z: block.position.z }, 200)
-                        .easing(TWEEN.Easing.Quadratic.Out)
-                        .onComplete(() => {
-                            if (logic.checkBlockExited(block)) {
-                                removeBlockAfterExit(block.id);
-                            } else {
-                                isAnimating = false;
-                                checkVictory();
-                            }
-                        }).start();
+                    moveCount = logic.moveBlock(block, dirX, dirY, dirZ);
                 }
+                
+                const SPEED = 0.012; // 单位：格/毫秒
+                const duration = moveCount / SPEED;
+
+                new TWEEN.Tween(group.position)
+                    .to({ x: block.position.x, y: block.position.y, z: block.position.z }, duration)
+                    .easing(TWEEN.Easing.Quadratic.Out)
+                    .onComplete(() => {
+                        if (logic.checkBlockExited(block)) {
+                            removeBlockAfterExit(block.id);
+                        } else {
+                            isAnimating = false;
+                            checkVictory();
+                        }
+                    }).start();
             } else {
                 // 不可移动：触发撞墙震颤
                 isAnimating = true; resetHover(blockMeshes);
                 const orig = { x: group.position.x, y: group.position.y, z: group.position.z };
                 new TWEEN.Tween(group.position)
-                    .to({ x: orig.x + dx * 0.2, y: orig.y + dy * 0.2, z: orig.z + dz * 0.2 }, 70)
+                    .to({ x: orig.x + dirX * 0.2, y: orig.y + dirY * 0.2, z: orig.z + dirZ * 0.2 }, 70)
                     .easing(TWEEN.Easing.Quadratic.Out)
                     .chain(new TWEEN.Tween(group.position).to(orig, 70).onComplete(() => isAnimating = false))
                     .start();
