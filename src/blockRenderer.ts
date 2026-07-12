@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { BlockDef, CanvasDirection, BlockMeshData } from './types';
+import type { BlockDef, BlockType, CanvasDirection, BlockMeshData } from './types';
 
 // 生成矢量箭头贴图（方块表面）
-export function createCanvasTexture(baseColor: number, dirs: CanvasDirection[], renderer: THREE.WebGLRenderer) {
+export function createCanvasTexture(baseColor: number, dirs: CanvasDirection[], renderer: THREE.WebGLRenderer, wallStyle: boolean = false, dimmed: boolean = false) {
     const size = 1024;
     const canvas = document.createElement('canvas');
     canvas.width = size; canvas.height = size;
@@ -11,6 +11,21 @@ export function createCanvasTexture(baseColor: number, dirs: CanvasDirection[], 
 
     ctx.fillStyle = '#' + baseColor.toString(16).padStart(6, '0');
     ctx.fillRect(0, 0, size, size);
+
+    if (wallStyle) {
+        ctx.strokeStyle = '#444444';
+        ctx.lineWidth = size * 0.02;
+        ctx.strokeRect(size * 0.01, size * 0.01, size - size * 0.02, size - size * 0.02);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+        return tex;
+    }
+
+    // 不可移动方向的面：叠加 5% 黑色（箭头绘制在上层，不受影响）
+    if (dimmed) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(0, 0, size, size);
+    }
 
     if (dirs.length === 0) return new THREE.CanvasTexture(canvas);
 
@@ -54,13 +69,21 @@ export function createBlocks(blocks: BlockDef[], scene: THREE.Scene, renderer: T
 
     for (const block of blocks) {
         const group = new THREE.Group();
-        const baseColor = block.isTarget ? 0xcc3333 : 0xcccccc;
+        const colorMap: Record<BlockType, number> = {
+            'target': 0xcc3333,
+            'exit': 0x3366cc,
+            'obstacle': 0xcccccc,
+            'wall': 0x222222,
+        };
+        const baseColor = colorMap[block.type];
         const isFree = block.allowedDirs.length === 6;
+        const faceDirs: ('+x' | '-x' | '+y' | '-y' | '+z' | '-z')[] = ['+x', '-x', '+y', '-y', '+z', '-z'];
         const blockMaterials: THREE.MeshStandardMaterial[] = [];
 
         // 索引顺序: 0:+X, 1:-X, 2:+Y, 3:-Y, 4:+Z, 5:-Z
         for (let j = 0; j < 6; j++) {
             const canvasDirs: CanvasDirection[] = [];
+            const isFaceDimmed = !isFree && !block.allowedDirs.includes(faceDirs[j]);
 
             if (!isFree) {
                 block.allowedDirs.forEach(worldDir => {
@@ -108,8 +131,9 @@ export function createBlocks(blocks: BlockDef[], scene: THREE.Scene, renderer: T
             }
 
             blockMaterials.push(new THREE.MeshStandardMaterial({
-                map: createCanvasTexture(baseColor, canvasDirs, renderer),
-                roughness: 0.6,
+                map: createCanvasTexture(baseColor, canvasDirs, renderer, block.type === 'wall', isFaceDimmed),
+                roughness: 0.3,
+                metalness: 0.4,
                 polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
             }));
         }
@@ -137,6 +161,8 @@ export function createBlocks(blocks: BlockDef[], scene: THREE.Scene, renderer: T
         const blockMesh = new THREE.Mesh(finalBlockGeo, blockMaterials);
         blockMesh.userData = { id: block.id };
         blockMesh.renderOrder = 10;  // 方块渲染优先级高于孔洞蓝线（renderOrder=5）
+        blockMesh.castShadow = true;
+        blockMesh.receiveShadow = true;
         group.add(blockMesh);
         const edgeGeo = new THREE.EdgesGeometry(BufferGeometryUtils.mergeVertices(BufferGeometryUtils.mergeGeometries(outerFacesForEdges)), 1);
         const outlineMesh = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }));
@@ -144,12 +170,12 @@ export function createBlocks(blocks: BlockDef[], scene: THREE.Scene, renderer: T
         (outlineMesh.material as THREE.LineBasicMaterial).polygonOffset = true;
         (outlineMesh.material as THREE.LineBasicMaterial).polygonOffsetFactor = -1;
         (outlineMesh.material as THREE.LineBasicMaterial).polygonOffsetUnits = -1;
-        group.add(outlineMesh);
+        if (block.type !== 'wall') group.add(outlineMesh);
         group.position.set(block.position.x, block.position.y, block.position.z);
         scene.add(group);
 
         let ghostGroup: THREE.Group | undefined;
-        if (block.isTarget && block.targetPosition) {
+        if (block.type === 'target' && block.targetPosition) {
             ghostGroup = new THREE.Group();
             const ghostMat = new THREE.LineDashedMaterial({ color: 0x00FF00, dashSize: 0.2, gapSize: 0.1, depthTest: false, transparent: true, opacity: 0.8 });
             const ghostOutline = new THREE.LineSegments(edgeGeo, ghostMat);

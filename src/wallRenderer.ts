@@ -56,26 +56,30 @@ export function createRoom(scene: THREE.Scene, bounds: Vec3, exits: ExitDef[]): 
     // 墙面格子材质：带边缘线纹理，BackSide 只渲染内面
     const wallMaterial = new THREE.MeshStandardMaterial({
         map: wallTexture,
-        side: THREE.BackSide,  // 渲染法线反面（内面），外面透视进去
+        side: THREE.BackSide,
         roughness: 1,
         transparent: true,
         opacity: 0.9
     });
 
-    // 孔洞填充材质：只有蓝色填充纹理，DoubleSide 双面可见
-    const exitMaterial = new THREE.MeshBasicMaterial({
+    // 孔洞填充材质：自发光蓝色，照亮周围
+    const exitMaterial = new THREE.MeshStandardMaterial({
         map: exitTexture,
         transparent: true,
-        opacity: 1.0,  // 透明度已在纹理中设置
+        opacity: 1.0,
         side: THREE.DoubleSide,
-        depthWrite: false  // 半透明面不写入深度缓冲，避免遮挡后方物体
+        depthWrite: false,
+        emissive: 0x0088ff,
+        emissiveIntensity: 1.5
     });
 
-    // 孔洞边缘线材质：蓝色圆柱体
-    const exitEdgeMaterial = new THREE.MeshBasicMaterial({
+    // 孔洞边缘线材质：自发光蓝色圆柱体
+    const exitEdgeMaterial = new THREE.MeshStandardMaterial({
         color: 0x00aaff,
         transparent: true,
-        opacity: 0.9
+        opacity: 0.9,
+        emissive: 0x00aaff,
+        emissiveIntensity: 2.0
     });
 
     wallConfigs.forEach((cfg) => {
@@ -108,6 +112,7 @@ export function createRoom(scene: THREE.Scene, bounds: Vec3, exits: ExitDef[]): 
                 // 根据是否是孔洞选择材质
                 const material = isExit ? exitMaterial : wallMaterial;
                 const cellMesh = new THREE.Mesh(plane, material);
+                cellMesh.receiveShadow = true;
                 const cellKey = `${cfg.wall},${u},${v}`;
 
                 roomGroup.add(cellMesh);
@@ -125,6 +130,27 @@ export function createRoom(scene: THREE.Scene, bounds: Vec3, exits: ExitDef[]): 
                     });
                 }
             }
+        }
+
+        // 为该墙面的洞口区域模拟面光源：每个 exit 格子放一个弱 PointLight
+        // 总强度分散到每个格子，避免单点尖锐高光
+        if (exitSet.size > 0) {
+            const intensityPerCell = 0.6 / exitSet.size;
+            exitSet.forEach(key => {
+                const [eu, ev] = key.split(',').map(Number);
+                const lOffset1 = eu - cfg.size1 / 2 + 0.5;
+                const lOffset2 = ev - cfg.size2 / 2 + 0.5;
+
+                const lightPos = new THREE.Vector3(lOffset1, lOffset2, 0);
+                lightPos.applyEuler(new THREE.Euler(cfg.rot[0], cfg.rot[1], cfg.rot[2]));
+                lightPos.add(new THREE.Vector3(cfg.pos[0], cfg.pos[1], cfg.pos[2]));
+                // 沿墙面法线向内偏移
+                lightPos.add(new THREE.Vector3(cfg.normal[0], cfg.normal[1], cfg.normal[2]).multiplyScalar(-0.3));
+
+                const cellLight = new THREE.PointLight(0x00aaff, intensityPerCell, 6, 2);
+                cellLight.position.copy(lightPos);
+                roomGroup.add(cellLight);
+            });
         }
     });
 

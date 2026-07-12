@@ -206,14 +206,4 @@ export class GameLogic {
             this.blocks.splice(index, 1);
         }
     }
-
-    checkVictory(): boolean {
-        const targets = this.blocks.filter(b => b.isTarget);
-        return targets.every(t =>
-            t.targetPosition &&
-            t.position.x === t.targetPosition.x &&
-            t.position.y === t.targetPosition.y &&
-            t.position.z === t.targetPosition.z
-        );
-    }
 }

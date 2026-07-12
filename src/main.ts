@@ -1,17 +1,26 @@
 import './style.css';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import * as TWEEN from '@tweenjs/tween.js';
 import { LEVEL_BOUNDS, LEVEL_BLOCKS, LEVEL_EXITS } from './data';
 import { GameLogic } from './logic';
 import { createRoom, createBlocks, updateSelectionVisuals, resetHover } from './renderer';
+import type { GameState } from './gameState';
+import { checkVictory, isExitCausesDefeat } from './winLoss';
 
 // 1. 初始化游戏逻辑
 const logic = new GameLogic(LEVEL_BOUNDS, LEVEL_BLOCKS, LEVEL_EXITS);
 
-// --- 全局状态变量 ---
-let selectedBlockId: string | null = null;
-let isAnimating = false;
+// --- 全局游戏状态 ---
+const gameState: GameState = {
+    logic,
+    blockMeshes: new Map(),
+    selectedBlockId: null,
+    isAnimating: false,
+};
 let pointerDownPos = { x: 0, y: 0 };
 const CLICK_THRESHOLD = 5;
 
@@ -19,12 +28,14 @@ const CLICK_THRESHOLD = 5;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x1a1a1a);
 
-const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
-camera.position.set(LEVEL_BOUNDS.x * 1.2, LEVEL_BOUNDS.y * 1.5, LEVEL_BOUNDS.z * 2);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(LEVEL_BOUNDS.x * 0.9, LEVEL_BOUNDS.y * 1.1, LEVEL_BOUNDS.z * 1.5);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.getElementById('app')!.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -36,26 +47,26 @@ controls.update();
 
 // 3. 构建场景内容
 createRoom(scene, LEVEL_BOUNDS, LEVEL_EXITS);
-const blockMeshes = createBlocks(LEVEL_BLOCKS, scene, renderer);
+gameState.blockMeshes = createBlocks(LEVEL_BLOCKS, scene, renderer);
 
 // 4. 交互逻辑
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 
 window.addEventListener('pointermove', (event) => {
-    resetHover(blockMeshes);
-    if (!selectedBlockId || isAnimating) return;
+    resetHover(gameState.blockMeshes);
+    if (!gameState.selectedBlockId || gameState.isAnimating) return;
     const rect = renderer.domElement.getBoundingClientRect();
     mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(mouse, camera);
-    const activeData = blockMeshes.get(selectedBlockId)!;
+    const activeData = gameState.blockMeshes.get(gameState.selectedBlockId)!;
     const intersects = raycaster.intersectObjects(activeData.group.children.filter(c => c instanceof THREE.Mesh));
 
     if (intersects.length > 0) {
         const hit = intersects[0];
         if (hit.face && typeof hit.face.materialIndex !== 'undefined') {
-            const block = logic.blocks.find(b => b.id === selectedBlockId)!;
+            const block = logic.blocks.find(b => b.id === gameState.selectedBlockId)!;
             const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).round();
             activeData.materials[hit.face.materialIndex].emissive.setHex(
                 logic.canMove(block, normal.x, normal.y, normal.z) ? 0x888888 : 0x880000
@@ -69,7 +80,7 @@ window.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefau
 window.addEventListener('contextmenu', (e) => e.preventDefault());
 
 window.addEventListener('pointerup', (event) => {
-    if (isAnimating || event.button !== 0) return;
+    if (gameState.isAnimating || event.button !== 0) return;
     if (Math.hypot(event.clientX - pointerDownPos.x, event.clientY - pointerDownPos.y) > CLICK_THRESHOLD) return;
 
     const rect = renderer.domElement.getBoundingClientRect();
@@ -77,30 +88,33 @@ window.addEventListener('pointerup', (event) => {
     mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(mouse, camera);
 
-    const allMeshes = Array.from(blockMeshes.values()).flatMap(b => b.group.children.filter(c => c instanceof THREE.Mesh));
+    const allMeshes = Array.from(gameState.blockMeshes.values()).flatMap(b => b.group.children.filter(c => c instanceof THREE.Mesh));
     const intersects = raycaster.intersectObjects(allMeshes);
 
     if (intersects.length > 0) {
         const hit = intersects[0];
         const clickedId = hit.object.userData.id;
 
-        if (selectedBlockId !== clickedId) {
-            selectedBlockId = clickedId;
-            updateSelectionVisuals(blockMeshes, selectedBlockId);
-            resetHover(blockMeshes);
+        if (gameState.selectedBlockId !== clickedId) {
+            // 墙体块不可选择
+            const clickedBlock = logic.blocks.find(b => b.id === clickedId);
+            if (clickedBlock?.type === 'wall') return;
+            gameState.selectedBlockId = clickedId;
+            updateSelectionVisuals(gameState.blockMeshes, gameState.selectedBlockId);
+            resetHover(gameState.blockMeshes);
         }
         else if (hit.face) {
             const block = logic.blocks.find(b => b.id === clickedId)!;
             const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).round();
-            const { group } = blockMeshes.get(block.id)!;
+            const { group } = gameState.blockMeshes.get(block.id)!;
 
             const
                 dirX = normal.x,
                 dirY = normal.y,
                 dirZ = normal.z;
             if (logic.canMove(block, dirX, dirY, dirZ)) {
-                isAnimating = true;
-                resetHover(blockMeshes);
+                gameState.isAnimating = true;
+                resetHover(gameState.blockMeshes);
 
                 // Shift 来计算移动距离是1还是最大距离到边界
                 let moveCount: number;
@@ -133,7 +147,7 @@ window.addEventListener('pointerup', (event) => {
                 } else {
                     moveCount = logic.moveBlock(block, dirX, dirY, dirZ);
                 }
-                
+
                 const SPEED = 0.012; // 单位：格/毫秒
                 const duration = moveCount / SPEED;
 
@@ -144,27 +158,28 @@ window.addEventListener('pointerup', (event) => {
                         if (logic.checkBlockExited(block)) {
                             removeBlockAfterExit(block.id);
                         } else {
-                            isAnimating = false;
-                            checkVictory();
+                            gameState.isAnimating = false;
+                            notifyIfVictory();
                         }
                     }).start();
             } else {
                 // 不可移动：触发撞墙震颤
-                isAnimating = true; resetHover(blockMeshes);
+                gameState.isAnimating = true; resetHover(gameState.blockMeshes);
                 const orig = { x: group.position.x, y: group.position.y, z: group.position.z };
                 new TWEEN.Tween(group.position)
                     .to({ x: orig.x + dirX * 0.2, y: orig.y + dirY * 0.2, z: orig.z + dirZ * 0.2 }, 70)
                     .easing(TWEEN.Easing.Quadratic.Out)
-                    .chain(new TWEEN.Tween(group.position).to(orig, 70).onComplete(() => isAnimating = false))
+                    .chain(new TWEEN.Tween(group.position).to(orig, 70).onComplete(() => gameState.isAnimating = false))
                     .start();
             }
         }
     }
 });
 
-function checkVictory() {
-    if (logic.checkVictory()) {
-        setTimeout(() => alert('全目标达成！'), 100);
+// 胜利提示：由 main 决定何时检查
+function notifyIfVictory() {
+    if (checkVictory(gameState)) {
+        setTimeout(() => alert('恭喜！全部目标达成！'), 100);
     }
 }
 
@@ -172,7 +187,13 @@ function removeBlockAfterExit(blockId: string) {
     const block = logic.blocks.find(b => b.id === blockId);
     if (!block) return;
 
-    const meshData = blockMeshes.get(blockId);
+    // 胜负判定：目标块离开世界 → 游戏失败，锁死游戏
+    if (isExitCausesDefeat(block)) {
+        setTimeout(() => alert('目标块离开了世界！游戏失败！'), 100);
+        return;
+    }
+
+    const meshData = gameState.blockMeshes.get(blockId);
     if (!meshData) return;
 
     const group = meshData.group;
@@ -207,11 +228,11 @@ function removeBlockAfterExit(blockId: string) {
         .onComplete(() => {
             scene.remove(group);
             if (meshData.ghost) scene.remove(meshData.ghost);
-            blockMeshes.delete(blockId);
+            gameState.blockMeshes.delete(blockId);
             logic.removeBlock(blockId);
-            selectedBlockId = null;
-            isAnimating = false;
-            checkVictory();
+            gameState.selectedBlockId = null;
+            gameState.isAnimating = false;
+            notifyIfVictory();
         })
         .start();
 }
@@ -220,9 +241,41 @@ function removeBlockAfterExit(blockId: string) {
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
     renderer.setPixelRatio(window.devicePixelRatio); renderer.setSize(window.innerWidth, window.innerHeight);
+    composer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// 6. 渲染主循环
-scene.add(new THREE.AmbientLight(0xffffff, 1.0));
-function animate(time: number) { requestAnimationFrame(animate); TWEEN.update(time); controls.update(); renderer.render(scene, camera); }
+// 6. 光照与渲染主循环
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+
+// 主光源（方向光）：投射阴影
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+dirLight.position.set(LEVEL_BOUNDS.x * 1.5, LEVEL_BOUNDS.y * 2.5, LEVEL_BOUNDS.z * 1.5);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.set(2048, 2048);
+dirLight.shadow.camera.near = 0.5;
+dirLight.shadow.camera.far = 50;
+dirLight.shadow.camera.left = -LEVEL_BOUNDS.x;
+dirLight.shadow.camera.right = LEVEL_BOUNDS.x;
+dirLight.shadow.camera.top = LEVEL_BOUNDS.y;
+dirLight.shadow.camera.bottom = -LEVEL_BOUNDS.y;
+dirLight.shadow.bias = -0.0005;
+scene.add(dirLight);
+
+// 补光：从另一侧打光，不投射阴影，柔化暗部
+const fillLight = new THREE.DirectionalLight(0x8899ff, 0.3);
+fillLight.position.set(-LEVEL_BOUNDS.x, LEVEL_BOUNDS.y * 0.5, -LEVEL_BOUNDS.z);
+scene.add(fillLight);
+
+// 后处理：辉光（Bloom）
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    0.6,  // strength
+    0.4,  // radius
+    0.85  // threshold：只有亮度高于此值的部分才辉光
+);
+composer.addPass(bloomPass);
+
+function animate(time: number) { requestAnimationFrame(animate); TWEEN.update(time); controls.update(); composer.render(); }
 animate(performance.now());

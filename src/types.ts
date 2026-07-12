@@ -2,13 +2,20 @@ import * as THREE from 'three';
 
 export type Vec3 = { x: number, y: number, z: number };
 
+// 块类型：
+// - target（红色）：必须抵达 targetPosition，若离开世界则游戏失败
+// - exit（蓝色）：目标是离开世界，全部离开即完成该部分目标
+// - obstacle（灰色）：障碍/通道块，有方向移动限制，可离开世界但不影响胜负
+// - wall（深灰色）：完全不可移动，充当墙体
+export type BlockType = 'target' | 'exit' | 'obstacle' | 'wall';
+
 export interface BlockDef {
     id: string;
+    type: BlockType;
     cells: Vec3[];
     position: Vec3;
     allowedDirs: ('+x' | '-x' | '+y' | '-y' | '+z' | '-z')[];
-    isTarget?: boolean;
-    targetPosition?: Vec3;
+    targetPosition?: Vec3;  // 仅 type='target' 时使用
 }
 
 export type CanvasDirection = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
