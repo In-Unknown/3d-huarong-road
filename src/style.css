@@ -1,25 +1,43 @@
-/* 彻底清除所有可能的溢出 */
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-html, body {
-  width: 100%;
-  height: 100%;
-  /* 强制隐藏水平和垂直滚动条 */
-  overflow: hidden !important; 
-  /* 禁止触屏缩放和系统手势，防止移动端滚动 */
-  touch-action: none;
-  background-color: #1a1a1a;
-}
-
-canvas {
-  /* 消除行内元素间隙 */
-  display: block; 
-  /* 确保画布完全覆盖视口 */
-  width: 100vw;
-  height: 100vh;
-  outline: none;
+* { box-sizing: border-box; }
+:root { color-scheme: dark; font-family: system-ui, "Microsoft YaHei", sans-serif; color: #dce6ef; background: #151b23; }
+body { margin: 0; }
+#app { height: 100vh; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
+.toolbar { grid-row: 1; padding: 14px 22px 10px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #293442; }
+h1 { font-size: 18px; letter-spacing: 0.04em; margin: 0 0 4px; font-weight: 650; }
+p { margin: 0; }
+#progress { color: #91a5b9; font-size: 12px; }
+nav { display: flex; gap: 8px; }
+button, summary, label { -webkit-tap-highlight-color: transparent; }
+button { font: inherit; font-size: 13px; padding: 9px 12px; background: #202c39; color: #deebf6; border: 1px solid #3c4b5d; border-radius: 7px; cursor: pointer; min-height: 40px; }
+button:hover:not(:disabled) { background: #2b4255; border-color: #69c7de; }
+button:focus-visible, summary:focus-visible, input:focus-visible { outline: 2px solid #72d5e6; outline-offset: 3px; }
+button:disabled { color: #67798b; background: #1b252f; opacity: 0.65; cursor: not-allowed; }
+#viewport { grid-row: 2; min-height: 0; min-width: 0; position: relative; }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.help { position: absolute; left: 20px; top: 88px; z-index: 5; max-width: min(340px, calc(100vw - 40px)); border: 1px solid #344454; border-radius: 8px; background: #19232ff2; font-size: 12px; }
+.help summary { padding: 9px 12px; cursor: pointer; color: #adc1d5; }
+.help p { margin: 0 12px 12px; line-height: 1.7; }
+.selection { grid-row: 3; width: min(570px, calc(100% - 32px)); justify-self: center; padding: 10px 0 max(12px, env(safe-area-inset-bottom)); }
+.selection-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; margin-bottom: 8px; min-height: 24px; }
+.selection-heading label { white-space: nowrap; font-size: 12px; color: #a5bbcf; cursor: pointer; }
+input { accent-color: #58c9dd; vertical-align: middle; }
+.directions { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.directions button { font-size: 15px; font-variant-numeric: tabular-nums; min-height: 42px; }
+#feedback { min-height: 36px; padding-top: 8px; font-size: 12px; color: #a4bbce; line-height: 1.5; }
+[data-phase="won"] #feedback { color: #88e4ae; }
+[data-phase="lost"] #feedback { color: #ff9e9e; }
+#result { position: fixed; inset: 0; margin: auto; z-index: 10; width: min(360px, calc(100% - 32px)); padding: 24px; background: #19232ff5; color: #deebf6; border: 1px solid #69c7de; border-radius: 12px; box-shadow: 0 12px 48px #0008; }
+#result h2 { margin: 0 0 12px; font-size: 22px; }
+#result p { margin-bottom: 20px; line-height: 1.6; }
+#result button + button { margin-left: 8px; }
+@media (max-width: 520px) {
+    .toolbar { padding: 12px 12px 10px; gap: 6px; }
+    h1 { font-size: 16px; }
+    nav { gap: 5px; }
+    nav button { font-size: 12px; padding: 8px; }
+    .help { left: 12px; top: 84px; }
+    .selection { width: calc(100% - 24px); }
+    .directions { gap: 5px; }
+    .directions button { padding: 8px 4px; }
+    .selection-heading { font-size: 12px; }
 }

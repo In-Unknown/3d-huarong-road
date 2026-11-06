@@ -9,5 +9,6 @@ export interface GameState {
     logic: GameLogic;
     blockMeshes: Map<string, BlockMeshData>;
     selectedBlockId: string | null;
-    isAnimating: boolean;
+    phase: 'playing' | 'animating' | 'won' | 'lost';
+    moves: number;
 }

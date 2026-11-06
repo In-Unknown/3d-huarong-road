@@ -1,6 +1,8 @@
-import type { Vec3, BlockDef, ExitDef } from './types';
+import type { Vec3, BlockDef, ExitDef, LevelViewConfig } from './types';
 
 export const LEVEL_BOUNDS: Vec3 = { x: 10, y: 5, z: 5 };
+// true：可进入房间观察；false：缩放、旋转、平移在房间边界停止。
+export const LEVEL_VIEW: LevelViewConfig = { allowInteriorView: false };
 
 export const LEVEL_BLOCKS: BlockDef[] = [
     // 红色目标块：必须抵达 targetPosition

@@ -1,6 +1,11 @@
-import * as THREE from 'three';
+import type * as THREE from 'three';
 
 export type Vec3 = { x: number, y: number, z: number };
+export type Direction = '+x' | '-x' | '+y' | '-y' | '+z' | '-z';
+
+export interface LevelViewConfig {
+    allowInteriorView: boolean;
+}
 
 // 块类型：
 // - target（红色）：必须抵达 targetPosition，若离开世界则游戏失败
@@ -14,15 +19,16 @@ export interface BlockDef {
     type: BlockType;
     cells: Vec3[];
     position: Vec3;
-    allowedDirs: ('+x' | '-x' | '+y' | '-y' | '+z' | '-z')[];
+    allowedDirs: Direction[];
     targetPosition?: Vec3;  // 仅 type='target' 时使用
 }
 
-export type CanvasDirection = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
-
 export interface BlockMeshData {
     group: THREE.Group;
+    body: THREE.Mesh;
     materials: THREE.MeshStandardMaterial[];
+    baseColors: Float32Array;
+    hoveredFace: number | null;
     edges: THREE.LineSegments;
     ghost?: THREE.Group;
 }
@@ -50,6 +56,7 @@ export interface WallCellDef {
 
 export interface WallMeshData {
     group: THREE.Group;
-    cells: Map<string, THREE.Mesh>;  // 格子映射表 (key: "wall,u,v")
-    edges: Map<string, THREE.Mesh>; // 格子边缘映射表（使用圆柱体管道）
+    solidCells: Set<string>;
+    occluders: THREE.Mesh[];
+    lights: THREE.SpotLight[];
 }

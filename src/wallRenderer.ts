@@ -1,241 +1,135 @@
 import * as THREE from 'three';
 import type { Vec3, ExitDef, WallMeshData } from './types';
+import { FACE_FRAMES, wallSize, wallCellPosition, createExitSet, exitKey } from './space';
+import { connectedRegions } from './surfaces';
+import type { Point2 } from './surfaces';
+import { mergeAndDispose } from './resources';
+import { createWallMaterial } from './wallMaterial';
 
-// 创建格子纹理（带边缘线）
-function createCellTexture(isExit: boolean): THREE.CanvasTexture {
-    const size = 256;
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d')!;
-
-    // 背景
-    if (isExit) {
-        ctx.fillStyle = '#0066ff';
-        ctx.globalAlpha = 0.15;
-        ctx.fillRect(0, 0, size, size);
-    } else {
-        // 墙面格子：绘制背景和边缘线
-        ctx.fillStyle = '#222222';
-        ctx.globalAlpha = 1.0;
-        ctx.fillRect(0, 0, size, size);
-
-        // 边缘线（只在墙面格子上绘制）
-        ctx.strokeStyle = '#444444';
-        ctx.lineWidth = size * 0.02;
-        ctx.strokeRect(size * 0.01, size * 0.01, size - size * 0.02, size - size * 0.02);
-    }
-
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.anisotropy = 4;  // 提高纹理清晰度
-    return texture;
+function wallPoint(bounds: Vec3, wall: number, u: number, v: number): THREE.Vector3 {
+    const p = wallCellPosition(bounds, wall, u, v), n = FACE_FRAMES[wall].normal;
+    return new THREE.Vector3(p.x + n.x * 0.5, p.y + n.y * 0.5, p.z + n.z * 0.5);
+}
+function wallPlane(bounds: Vec3, wall: number, u: number, v: number): THREE.BufferGeometry {
+    const f = FACE_FRAMES[wall];
+    const matrix = new THREE.Matrix4().makeBasis(new THREE.Vector3(f.u.x, f.u.y, f.u.z),
+        new THREE.Vector3(f.v.x, f.v.y, f.v.z), new THREE.Vector3(f.normal.x, f.normal.y, f.normal.z));
+    matrix.setPosition(wallPoint(bounds, wall, u, v));
+    return new THREE.PlaneGeometry(1, 1).applyMatrix4(matrix);
 }
 
-// 创建房间网格（格子化墙面渲染）
+/** Largest filled rectangle: the spotlight's cone fits through real opening cells,
+ * including L-shaped openings. It never shines through the bounding box's missing cells.
+ */
+function aperture(region: Point2[]): { u: number; v: number; radius: number } {
+    const set = new Set(region.map(c => `${c.u},${c.v}`));
+    let best = { u: region[0].u, v: region[0].v, radius: 0.42 };
+    for (const p of region) {
+        let width = Infinity;
+        for (let height = 1; set.has(`${p.u},${p.v + height - 1}`); height++) {
+            let rowWidth = 0;
+            while (set.has(`${p.u + rowWidth},${p.v + height - 1}`)) rowWidth++;
+            width = Math.min(width, rowWidth);
+            const radius = Math.min(width, height) / 2 - 0.08;
+            if (radius > best.radius) best = { u: p.u + (width - 1) / 2, v: p.v + (height - 1) / 2, radius };
+        }
+    }
+    return best;
+}
+
 export function createRoom(scene: THREE.Scene, bounds: Vec3, exits: ExitDef[]): WallMeshData {
-    // 墙面配置：定义每面墙的位置、旋转和尺寸
-    const wallConfigs = [
-        { wall: 0, normal: [1, 0, 0], size1: bounds.z, size2: bounds.y, pos: [bounds.x - 0.5, bounds.y / 2 - 0.5, bounds.z / 2 - 0.5], rot: [0, Math.PI / 2, 0] },
-        { wall: 1, normal: [-1, 0, 0], size1: bounds.z, size2: bounds.y, pos: [-0.5, bounds.y / 2 - 0.5, bounds.z / 2 - 0.5], rot: [0, -Math.PI / 2, 0] },
-        { wall: 2, normal: [0, 1, 0], size1: bounds.x, size2: bounds.z, pos: [bounds.x / 2 - 0.5, bounds.y - 0.5, bounds.z / 2 - 0.5], rot: [-Math.PI / 2, 0, 0] },
-        { wall: 3, normal: [0, -1, 0], size1: bounds.x, size2: bounds.z, pos: [bounds.x / 2 - 0.5, -0.5, bounds.z / 2 - 0.5], rot: [Math.PI / 2, 0, 0] },
-        { wall: 4, normal: [0, 0, 1], size1: bounds.x, size2: bounds.y, pos: [bounds.x / 2 - 0.5, bounds.y / 2 - 0.5, bounds.z - 0.5], rot: [0, 0, 0] },
-        { wall: 5, normal: [0, 0, -1], size1: bounds.x, size2: bounds.y, pos: [bounds.x / 2 - 0.5, bounds.y / 2 - 0.5, -0.5], rot: [0, Math.PI, 0] }
-    ];
-
-    const roomGroup = new THREE.Group();
-    const cellsMap = new Map<string, THREE.Mesh>();
-    const edgesMap = new Map<string, THREE.Mesh>();
-
-    // 为墙面格子和孔洞格子创建纹理材质
-    // 墙面格子：纹理包含边缘线
-    // 孔洞格子：纹理只有填充，边缘线用圆柱体单独绘制
-    const wallTexture = createCellTexture(false);
-    const exitTexture = createCellTexture(true);
-
-    // 墙面格子材质：带边缘线纹理，BackSide 只渲染内面
-    const wallMaterial = new THREE.MeshStandardMaterial({
-        map: wallTexture,
-        side: THREE.BackSide,
-        roughness: 1,
-        transparent: true,
-        opacity: 0.9
+    const group = new THREE.Group(), solidCells = new Set<string>(), lights: THREE.SpotLight[] = [];
+    const occluders: THREE.Mesh[] = [];
+    const exitCells = createExitSet(exits);
+    const wallMaterial = createWallMaterial(THREE.BackSide);
+    const fillMaterial = new THREE.MeshBasicMaterial({
+        color: 0x238fcf, side: THREE.DoubleSide, transparent: true, opacity: 0.1, depthWrite: false,
+        polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 2,
     });
-
-    // 孔洞填充材质：自发光蓝色，照亮周围
-    const exitMaterial = new THREE.MeshStandardMaterial({
-        map: exitTexture,
-        transparent: true,
-        opacity: 1.0,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-        emissive: 0x0088ff,
-        emissiveIntensity: 1.5
+    const edgeMaterial = new THREE.MeshStandardMaterial({
+        color: 0x16495f, emissive: 0x00aadd, emissiveIntensity: 0.8, roughness: 0.65,
     });
-
-    // 孔洞边缘线材质：自发光蓝色圆柱体
-    const exitEdgeMaterial = new THREE.MeshStandardMaterial({
-        color: 0x00aaff,
-        transparent: true,
-        opacity: 0.9,
-        emissive: 0x00aaff,
-        emissiveIntensity: 2.0
+    const box = new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5),
+        new THREE.Vector3(bounds.x - 0.5, bounds.y - 0.5, bounds.z - 0.5));
+    const min = box.min.clone().addScalar(-0.012), max = box.max.clone().addScalar(0.012);
+    const hiddenEdges: number[] = [];
+    for (let axis = 0; axis < 3; axis++) {
+        const other = [0, 1, 2].filter(i => i !== axis);
+        for (const a of [min.getComponent(other[0]), max.getComponent(other[0])])
+            for (const b of [min.getComponent(other[1]), max.getComponent(other[1])]) {
+                const start = new THREE.Vector3().setComponent(other[0], a).setComponent(other[1], b).setComponent(axis, min.getComponent(axis));
+                const end = start.clone().setComponent(axis, max.getComponent(axis));
+                hiddenEdges.push(...start.toArray(), ...end.toArray());
+            }
+    }
+    const hiddenEdgeGeometry = new THREE.BufferGeometry();
+    hiddenEdgeGeometry.setAttribute('position', new THREE.Float32BufferAttribute(hiddenEdges, 3));
+    hiddenEdgeGeometry.computeBoundingSphere();
+    const hiddenEdgeMaterial = new THREE.LineDashedMaterial({
+        color: 0x83a9d4, transparent: true, opacity: 0.72,
+        dashSize: 0.065, gapSize: 0.055, depthTest: true, depthWrite: false, depthFunc: THREE.LessEqualDepth,
     });
-
-    wallConfigs.forEach((cfg) => {
-        const wallExits = exits.filter(e => e.wall === cfg.wall);
-        const exitSet = new Set<string>();
-
-        // 构建孔洞格子集合（使用墙面局部坐标）
-        wallExits.forEach(exit => {
-            exit.cells.forEach(cell => {
-                // ExitDef 直接使用墙面局部坐标(u,v)，无需转换
-                exitSet.add(`${cell.u},${cell.v}`);
-            });
-        });
-
-        // 遍历每个格子位置
-        for (let u = 0; u < cfg.size1; u++) {
-            for (let v = 0; v < cfg.size2; v++) {
-                const isExit = exitSet.has(`${u},${v}`);
-                const offset1 = u - cfg.size1 / 2 + 0.5;
-                const offset2 = v - cfg.size2 / 2 + 0.5;
-
-                // 创建格子平面
-                const plane = new THREE.PlaneGeometry(1, 1);
-                plane.translate(offset1, offset2, 0);
-                plane.rotateX(cfg.rot[0]);
-                plane.rotateY(cfg.rot[1]);
-                plane.rotateZ(cfg.rot[2]);
-                plane.translate(cfg.pos[0], cfg.pos[1], cfg.pos[2]);
-
-                // 根据是否是孔洞选择材质
-                const material = isExit ? exitMaterial : wallMaterial;
-                const cellMesh = new THREE.Mesh(plane, material);
-                cellMesh.receiveShadow = true;
-                const cellKey = `${cfg.wall},${u},${v}`;
-
-                roomGroup.add(cellMesh);
-                cellsMap.set(cellKey, cellMesh);
-
-                // 孔洞格子：绘制边缘线圆柱体（检查相邻孔洞，避免重复）
-                if (isExit) {
-                    const edges = createExitEdges(
-                        u, v, offset1, offset2, cfg.rot, cfg.pos,
-                        exitEdgeMaterial, exitSet, cfg.size1, cfg.size2
-                    );
-                    edges.forEach((edgeMesh, edgeKey) => {
-                        roomGroup.add(edgeMesh);
-                        edgesMap.set(`${cellKey}_${edgeKey}`, edgeMesh);
-                    });
-                }
+    const hiddenEdgeLines = new THREE.LineSegments(hiddenEdgeGeometry, hiddenEdgeMaterial);
+    hiddenEdgeLines.name = 'occluded-room-edges';
+    hiddenEdgeLines.computeLineDistances();
+    hiddenEdgeLines.renderOrder = 10;
+    group.add(hiddenEdgeLines);
+    for (let wall = 0; wall < 6; wall++) {
+        const [width, height] = wallSize(bounds, wall);
+        const solids: THREE.BufferGeometry[] = [], fills: THREE.BufferGeometry[] = [], tubes: THREE.BufferGeometry[] = [];
+        const opening: Point2[] = [];
+        for (let u = 0; u < width; u++) for (let v = 0; v < height; v++) {
+            const key = exitKey(wall, u, v);
+            const plane = wallPlane(bounds, wall, u, v);
+            if (!exitCells.has(key)) { solidCells.add(key); solids.push(plane); continue; }
+            fills.push(plane); opening.push({ u, v });
+            // Only the actual contour, not internal seams between opening cells.
+            for (const [du, dv] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+                if (exitCells.has(exitKey(wall, u + du, v + dv))) continue;
+                const centerU = u + du * 0.5, centerV = v + dv * 0.5;
+                const start = wallPoint(bounds, wall, centerU - (dv ? 0.5 : 0), centerV - (du ? 0.5 : 0));
+                const end = wallPoint(bounds, wall, centerU + (dv ? 0.5 : 0), centerV + (du ? 0.5 : 0));
+                const tube = new THREE.CylinderGeometry(0.015, 0.015, 1, 8);
+                const rotation = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), end.clone().sub(start).normalize());
+                tube.applyQuaternion(rotation); tube.translate(...start.add(end).multiplyScalar(0.5).toArray());
+                tubes.push(tube);
             }
         }
-
-        // 为该墙面的洞口区域模拟面光源：每个 exit 格子放一个弱 PointLight
-        // 总强度分散到每个格子，避免单点尖锐高光
-        if (exitSet.size > 0) {
-            const intensityPerCell = 0.6 / exitSet.size;
-            exitSet.forEach(key => {
-                const [eu, ev] = key.split(',').map(Number);
-                const lOffset1 = eu - cfg.size1 / 2 + 0.5;
-                const lOffset2 = ev - cfg.size2 / 2 + 0.5;
-
-                const lightPos = new THREE.Vector3(lOffset1, lOffset2, 0);
-                lightPos.applyEuler(new THREE.Euler(cfg.rot[0], cfg.rot[1], cfg.rot[2]));
-                lightPos.add(new THREE.Vector3(cfg.pos[0], cfg.pos[1], cfg.pos[2]));
-                // 沿墙面法线向内偏移
-                lightPos.add(new THREE.Vector3(cfg.normal[0], cfg.normal[1], cfg.normal[2]).multiplyScalar(-0.3));
-
-                const cellLight = new THREE.PointLight(0x00aaff, intensityPerCell, 6, 2);
-                cellLight.position.copy(lightPos);
-                roomGroup.add(cellLight);
-            });
+        if (solids.length) {
+            const mesh = new THREE.Mesh(mergeAndDispose(solids), wallMaterial);
+            mesh.receiveShadow = true;
+            // Cutaway walls receive illumination but do not seal the room from the studio key light.
+            group.add(mesh); occluders.push(mesh);
         }
-    });
-
-    scene.add(roomGroup);
-
-    return {
-        group: roomGroup,
-        cells: cellsMap,
-        edges: edgesMap
-    };
+        if (fills.length) {
+            const fill = new THREE.Mesh(mergeAndDispose(fills), fillMaterial);
+            fill.renderOrder = 1; group.add(fill);
+        }
+        if (tubes.length) group.add(new THREE.Mesh(mergeAndDispose(tubes), edgeMaterial));
+        for (const region of connectedRegions(opening)) {
+            const a = aperture(region);
+            const center = wallPoint(bounds, wall, a.u, a.v);
+            const n = FACE_FRAMES[wall].normal;
+            const normal = new THREE.Vector3(n.x, n.y, n.z);
+            const distance = 4;
+            const light = new THREE.SpotLight(0x63b7ef, 5, Math.hypot(bounds.x, bounds.y, bounds.z) + distance + 2,
+                Math.atan(a.radius / distance), 0.65, 2);
+            light.position.copy(center).addScaledVector(normal, distance);
+            light.target.position.copy(center).addScaledVector(normal, -1);
+            light.castShadow = true;
+            light.shadow.mapSize.set(512, 512);
+            light.shadow.camera.near = 0.1;
+            light.shadow.bias = -0.00015; light.shadow.normalBias = 0.015;
+            group.add(light, light.target); lights.push(light);
+        }
+    }
+    // Dispose materials that an unusual all-open/all-closed room did not use.
+    if (!solidCells.size) { wallMaterial.map!.dispose(); wallMaterial.dispose(); }
+    if (!exitCells.size) { fillMaterial.dispose(); edgeMaterial.dispose(); }
+    scene.add(group);
+    return { group, solidCells, lights, occluders };
 }
 
-// 创建孔洞边缘线（圆柱体，检查相邻孔洞避免重复）
-function createExitEdges(
-    u: number,
-    v: number,
-    offset1: number,
-    offset2: number,
-    rot: number[],
-    pos: number[],
-    material: THREE.Material,
-    exitSet: Set<string>,
-    size1: number,
-    size2: number
-): Map<string, THREE.Mesh> {
-    const edgesMap = new Map<string, THREE.Mesh>();
-
-    // 四条边的位置和对应的相邻格子偏移
-    const edgePositions = [
-        { key: 'left', p1: [-0.5, -0.5, 0], p2: [-0.5, 0.5, 0], neighborOffset: { du: -1, dv: 0 } },
-        { key: 'right', p1: [0.5, -0.5, 0], p2: [0.5, 0.5, 0], neighborOffset: { du: 1, dv: 0 } },
-        { key: 'bottom', p1: [-0.5, -0.5, 0], p2: [0.5, -0.5, 0], neighborOffset: { du: 0, dv: -1 } },
-        { key: 'top', p1: [-0.5, 0.5, 0], p2: [0.5, 0.5, 0], neighborOffset: { du: 0, dv: 1 } }
-    ];
-
-    edgePositions.forEach(({ key, p1, p2, neighborOffset }) => {
-        const neighborU = u + neighborOffset.du;
-        const neighborV = v + neighborOffset.dv;
-
-        // 如果相邻格子也在墙内且也是孔洞，则不渲染这条内边缘
-        if (neighborU >= 0 && neighborU < size1 &&
-            neighborV >= 0 && neighborV < size2 &&
-            exitSet.has(`${neighborU},${neighborV}`)) {
-            return; // 不渲染这条边缘
-        }
-
-        const start = new THREE.Vector3(p1[0] + offset1, p1[1] + offset2, p1[2]);
-        const end = new THREE.Vector3(p2[0] + offset1, p2[1] + offset2, p2[2]);
-
-        // 应用旋转和平移变换
-        [start, end].forEach(p => {
-            p.applyEuler(new THREE.Euler(rot[0], rot[1], rot[2]));
-            p.add(new THREE.Vector3(pos[0], pos[1], pos[2]));
-        });
-
-        // 使用圆柱体管道绘制粗线条
-        const direction = new THREE.Vector3().subVectors(end, start);
-        const length = direction.length();
-        const tubeRadius = 0.02; // 线条粗细
-
-        const tubeGeometry = new THREE.CylinderGeometry(tubeRadius, tubeRadius, length, 6);
-        const tubeMesh = new THREE.Mesh(tubeGeometry, material);
-
-        // 定位管道
-        const midpoint = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5);
-        tubeMesh.position.copy(midpoint);
-
-        // 旋转管道使其对齐线段方向
-        const up = new THREE.Vector3(0, 1, 0);
-        const quaternion = new THREE.Quaternion().setFromUnitVectors(up, direction.normalize());
-        tubeMesh.quaternion.copy(quaternion);
-
-        // 设置渲染优先级：孔洞蓝线高于墙面和墙边缘，低于方块
-        tubeMesh.renderOrder = 5;
-
-        edgesMap.set(key, tubeMesh);
-    });
-
-    return edgesMap;
-}
-
-// 检查指定位置是否有墙面格子（用于移动判断）
-export function hasWallCell(wallMeshData: WallMeshData, wall: number, u: number, v: number): boolean {
-    const key = `${wall},${u},${v}`;
-    const cell = wallMeshData.cells.get(key);
-    // 如果格子存在，则返回true（孔洞格子也有mesh，但视觉上透明）
-    return cell !== undefined;
+export function hasWallCell(room: WallMeshData, wall: number, u: number, v: number): boolean {
+    return room.solidCells.has(exitKey(wall, u, v));
 }

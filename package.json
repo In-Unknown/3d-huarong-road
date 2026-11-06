@@ -3,17 +3,23 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=24.13.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --import ./tests/register.mjs --test tests/*.test.mjs",
+    "test:browser": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "@types/three": "^0.185.0",
     "typescript": "~6.0.2",
-    "vite": "^8.1.1"
+    "vite": "^8.3.6"
   },
   "dependencies": {
-    "@types/three": "^0.185.0",
     "three": "^0.185.1"
   }
 }

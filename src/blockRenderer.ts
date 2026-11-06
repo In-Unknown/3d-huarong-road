@@ -1,208 +1,167 @@
 import * as THREE from 'three';
-import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { BlockDef, BlockType, CanvasDirection, BlockMeshData } from './types';
+import type { BlockDef, BlockMeshData } from './types';
+import { DIRECTIONS, FACE_FRAMES } from './space';
+import { extractSurfaces, arrowStrokes } from './surfaces';
+import type { SurfacePatch, Point2 } from './surfaces';
+import { mergeAndDispose } from './resources';
+import { createWallMaterial } from './wallMaterial';
 
-// 生成矢量箭头贴图（方块表面）
-export function createCanvasTexture(baseColor: number, dirs: CanvasDirection[], renderer: THREE.WebGLRenderer, wallStyle: boolean = false, dimmed: boolean = false) {
-    const size = 1024;
-    const canvas = document.createElement('canvas');
-    canvas.width = size; canvas.height = size;
-    const ctx = canvas.getContext('2d')!;
-
-    ctx.fillStyle = '#' + baseColor.toString(16).padStart(6, '0');
-    ctx.fillRect(0, 0, size, size);
-
-    if (wallStyle) {
-        ctx.strokeStyle = '#444444';
-        ctx.lineWidth = size * 0.02;
-        ctx.strokeRect(size * 0.01, size * 0.01, size - size * 0.02, size - size * 0.02);
-        const tex = new THREE.CanvasTexture(canvas);
-        tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-        return tex;
-    }
-
-    // 不可移动方向的面：叠加 5% 黑色（箭头绘制在上层，不受影响）
-    if (dimmed) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        ctx.fillRect(0, 0, size, size);
-    }
-
-    if (dirs.length === 0) return new THREE.CanvasTexture(canvas);
-
-    ctx.shadowColor = 'rgba(0,0,0,0.5)';
-    ctx.shadowBlur = 20;
-    ctx.strokeStyle = '#FFFFFF';
-    ctx.lineWidth = size * 0.1;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-
-    const padding = size * 0.2;
-    const mid = size / 2;
-    const head = size * 0.15;
-
-    dirs.forEach(d => {
-        ctx.beginPath();
-        if (d === 'LEFT') {
-            ctx.moveTo(mid, mid); ctx.lineTo(padding, mid);
-            ctx.moveTo(padding + head, mid - head); ctx.lineTo(padding, mid); ctx.lineTo(padding + head, mid + head);
-        } else if (d === 'RIGHT') {
-            ctx.moveTo(mid, mid); ctx.lineTo(size - padding, mid);
-            ctx.moveTo(size - padding - head, mid - head); ctx.lineTo(size - padding, mid); ctx.lineTo(size - padding - head, mid + head);
-        } else if (d === 'UP') {
-            ctx.moveTo(mid, mid); ctx.lineTo(mid, padding);
-            ctx.moveTo(mid - head, padding + head); ctx.lineTo(mid, padding); ctx.lineTo(mid + head, padding + head);
-        } else if (d === 'DOWN') {
-            ctx.moveTo(mid, mid); ctx.lineTo(mid, size - padding);
-            ctx.moveTo(mid - head, size - padding - head); ctx.lineTo(mid, size - padding); ctx.lineTo(mid + head, size - padding - head);
-        }
-        ctx.stroke();
-    });
-
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-    return tex;
+function pointOnFace(patch: SurfacePatch, p: Point2, offset = 0): THREE.Vector3 {
+    const { u, v, normal: n } = FACE_FRAMES[patch.face];
+    return new THREE.Vector3(u.x * p.u + v.x * p.v + n.x * (patch.plane + offset),
+        u.y * p.u + v.y * p.v + n.y * (patch.plane + offset),
+        u.z * p.u + v.z * p.v + n.z * (patch.plane + offset));
 }
 
-// 创建所有方块的 mesh，返回映射表
-export function createBlocks(blocks: BlockDef[], scene: THREE.Scene, renderer: THREE.WebGLRenderer): Map<string, BlockMeshData> {
-    const blockMeshes: Map<string, BlockMeshData> = new Map();
+function surfacePlane(patch: SurfacePatch, cell: Point2): THREE.BufferGeometry {
+    const { u, v, normal } = FACE_FRAMES[patch.face];
+    const matrix = new THREE.Matrix4().makeBasis(new THREE.Vector3(u.x, u.y, u.z),
+        new THREE.Vector3(v.x, v.y, v.z), new THREE.Vector3(normal.x, normal.y, normal.z));
+    matrix.setPosition(pointOnFace(patch, cell));
+    return new THREE.PlaneGeometry(1, 1).applyMatrix4(matrix);
+}
 
+// Vector strokes, constant world-space width: no giant repeated textures or baked shadows.
+function arrowGeometry(patches: SurfacePatch[], block: BlockDef): THREE.BufferGeometry | null {
+    const positions: number[] = [];
+    for (const patch of patches) {
+        for (const { from, to } of arrowStrokes(patch, block.allowedDirs)) {
+            const du = to.u - from.u, dv = to.v - from.v, length = Math.hypot(du, dv);
+            if (!length) continue;
+            const radius = 0.038, angle = Math.atan2(dv, du);
+            const contour: Point2[] = [];
+            // Capsule polygon keeps connections and arrowhead tips smoothly joined.
+            for (let i = 0; i <= 6; i++) {
+                const a = angle - Math.PI / 2 + i * Math.PI / 6;
+                contour.push({ u: to.u + Math.cos(a) * radius, v: to.v + Math.sin(a) * radius });
+            }
+            for (let i = 0; i <= 6; i++) {
+                const a = angle + Math.PI / 2 + i * Math.PI / 6;
+                contour.push({ u: from.u + Math.cos(a) * radius, v: from.v + Math.sin(a) * radius });
+            }
+            const center = pointOnFace(patch, { u: (from.u + to.u) / 2, v: (from.v + to.v) / 2 }, 0.003);
+            for (let i = 0; i < contour.length; i++) {
+                const a = pointOnFace(patch, contour[i], 0.003), b = pointOnFace(patch, contour[(i + 1) % contour.length], 0.003);
+                positions.push(...center.toArray(), ...a.toArray(), ...b.toArray());
+            }
+        }
+    }
+    if (!positions.length) return null;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    return geometry;
+}
+
+export function createBlocks(blocks: BlockDef[], scene: THREE.Scene): Map<string, BlockMeshData> {
+    const result = new Map<string, BlockMeshData>();
+    const colors = { target: 0xc6534d, exit: 0x397dbd, obstacle: 0x99a4b2, wall: 0xffffff };
     for (const block of blocks) {
         const group = new THREE.Group();
-        const colorMap: Record<BlockType, number> = {
-            'target': 0xcc3333,
-            'exit': 0x3366cc,
-            'obstacle': 0xcccccc,
-            'wall': 0x222222,
-        };
-        const baseColor = colorMap[block.type];
-        const isFree = block.allowedDirs.length === 6;
-        const faceDirs: ('+x' | '-x' | '+y' | '-y' | '+z' | '-z')[] = ['+x', '-x', '+y', '-y', '+z', '-z'];
-        const blockMaterials: THREE.MeshStandardMaterial[] = [];
-
-        // 索引顺序: 0:+X, 1:-X, 2:+Y, 3:-Y, 4:+Z, 5:-Z
-        for (let j = 0; j < 6; j++) {
-            const canvasDirs: CanvasDirection[] = [];
-            const isFaceDimmed = !isFree && !block.allowedDirs.includes(faceDirs[j]);
-
-            if (!isFree) {
-                block.allowedDirs.forEach(worldDir => {
-                    if (j === 0 || j === 1) if (worldDir.includes('x')) return;
-                    if (j === 2 || j === 3) if (worldDir.includes('y')) return;
-                    if (j === 4 || j === 5) if (worldDir.includes('z')) return;
-
-                    if (j === 0) {
-                        if (worldDir === '+y') canvasDirs.push('UP');
-                        if (worldDir === '-y') canvasDirs.push('DOWN');
-                        if (worldDir === '+z') canvasDirs.push('LEFT');
-                        if (worldDir === '-z') canvasDirs.push('RIGHT');
-                    }
-                    else if (j === 1) {
-                        if (worldDir === '+y') canvasDirs.push('UP');
-                        if (worldDir === '-y') canvasDirs.push('DOWN');
-                        if (worldDir === '+z') canvasDirs.push('RIGHT');
-                        if (worldDir === '-z') canvasDirs.push('LEFT');
-                    }
-                    else if (j === 2) {
-                        if (worldDir === '+x') canvasDirs.push('RIGHT');
-                        if (worldDir === '-x') canvasDirs.push('LEFT');
-                        if (worldDir === '+z') canvasDirs.push('DOWN');
-                        if (worldDir === '-z') canvasDirs.push('UP');
-                    }
-                    else if (j === 3) {
-                        if (worldDir === '+x') canvasDirs.push('RIGHT');
-                        if (worldDir === '-x') canvasDirs.push('LEFT');
-                        if (worldDir === '+z') canvasDirs.push('UP');
-                        if (worldDir === '-z') canvasDirs.push('DOWN');
-                    }
-                    else if (j === 4) {
-                        if (worldDir === '+x') canvasDirs.push('RIGHT');
-                        if (worldDir === '-x') canvasDirs.push('LEFT');
-                        if (worldDir === '+y') canvasDirs.push('UP');
-                        if (worldDir === '-y') canvasDirs.push('DOWN');
-                    }
-                    else if (j === 5) {
-                        if (worldDir === '+x') canvasDirs.push('LEFT');
-                        if (worldDir === '-x') canvasDirs.push('RIGHT');
-                        if (worldDir === '+y') canvasDirs.push('UP');
-                        if (worldDir === '-y') canvasDirs.push('DOWN');
-                    }
-                });
+        const patches = extractSurfaces(block.cells);
+        const material = block.type === 'wall' ? createWallMaterial() : new THREE.MeshStandardMaterial({
+            vertexColors: true,
+            roughness: 0.46, metalness: 0,
+            polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+        });
+        const materials = [material];
+        const faces = DIRECTIONS.map((_, face) => mergeAndDispose(patches.filter(p => p.face === face).flatMap(p => p.cells.map(c => surfacePlane(p, c)))));
+        const geometry = mergeAndDispose(faces, true);
+        const baseColors = new Float32Array(geometry.attributes.position.count * 3);
+        geometry.groups.forEach((g, face) => {
+            const color = new THREE.Color(colors[block.type]);
+            // A direction cue must not erase the block's pigment in shadow.
+            if (block.type !== 'wall' && !block.allowedDirs.includes(DIRECTIONS[face])) {
+                color.multiplyScalar(0.65);
             }
-
-            blockMaterials.push(new THREE.MeshStandardMaterial({
-                map: createCanvasTexture(baseColor, canvasDirs, renderer, block.type === 'wall', isFaceDimmed),
-                roughness: 0.3,
-                metalness: 0.4,
-                polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
-            }));
+            for (let i = g.start; i < g.start + g.count; i++) color.toArray(baseColors, geometry.index!.getX(i) * 3);
+        });
+        geometry.setAttribute('color', new THREE.BufferAttribute(baseColors.slice(), 3));
+        geometry.setAttribute('hoverEmission', new THREE.Float32BufferAttribute(new Float32Array(baseColors.length), 3));
+        // Per-face emission preserves the original hover cue without six material draws.
+        materials[0].onBeforeCompile = shader => {
+            shader.vertexShader = shader.vertexShader.replace('#include <common>',
+                '#include <common>\nattribute vec3 hoverEmission;\nvarying vec3 vHoverEmission;')
+                .replace('#include <begin_vertex>', '#include <begin_vertex>\nvHoverEmission = hoverEmission;');
+            shader.fragmentShader = shader.fragmentShader.replace('#include <common>',
+                '#include <common>\nvarying vec3 vHoverEmission;')
+                .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vHoverEmission;');
+        };
+        // One draw per block, including shadow passes. Groups remain available for face feedback.
+        const body = new THREE.Mesh(geometry, materials[0]);
+        body.userData.id = block.id;
+        body.userData.blockType = block.type;
+        body.castShadow = true; body.receiveShadow = true;
+        group.add(body);
+        // Free blocks intentionally remain unmarked; the selection panel names all six directions.
+        if (block.type !== 'wall' && block.allowedDirs.length !== 6) {
+            const arrows = arrowGeometry(patches, block);
+            if (arrows) {
+                const marks = new THREE.Mesh(arrows, new THREE.MeshStandardMaterial({
+                    color: 0xe0e5eb, roughness: 0.65, metalness: 0, depthWrite: false,
+                }));
+                marks.receiveShadow = true;
+                marks.name = 'continuous-arrows';
+                group.add(marks);
+            }
         }
-
-        // Voxel 剔除逻辑
-        const dirGeos: THREE.BufferGeometry[][] = [[], [], [], [], [], []];
-        const outerFacesForEdges: THREE.BufferGeometry[] = [];
-        for (const cell of block.cells) {
-            const hasNeighbor = (dx: number, dy: number, dz: number) => block.cells.some(c => c.x === cell.x + dx && c.y === cell.y + dy && c.z === cell.z + dz);
-            const faceConfigs = [
-                { dir: [1, 0, 0], rot: [0, Math.PI / 2, 0], pos: [0.5, 0, 0], idx: 0 }, { dir: [-1, 0, 0], rot: [0, -Math.PI / 2, 0], pos: [-0.5, 0, 0], idx: 1 },
-                { dir: [0, 1, 0], rot: [-Math.PI / 2, 0, 0], pos: [0, 0.5, 0], idx: 2 }, { dir: [0, -1, 0], rot: [Math.PI / 2, 0, 0], pos: [0, -0.5, 0], idx: 3 },
-                { dir: [0, 0, 1], rot: [0, 0, 0], pos: [0, 0, 0.5], idx: 4 }, { dir: [0, 0, -1], rot: [0, Math.PI, 0], pos: [0, 0, -0.5], idx: 5 }
-            ];
-            faceConfigs.forEach(f => {
-                if (!hasNeighbor(f.dir[0], f.dir[1], f.dir[2])) {
-                    const plane = new THREE.PlaneGeometry(1, 1);
-                    plane.rotateX(f.rot[0]); plane.rotateY(f.rot[1]); plane.rotateZ(f.rot[2]);
-                    plane.translate(f.pos[0] + cell.x, f.pos[1] + cell.y, f.pos[2] + cell.z);
-                    dirGeos[f.idx].push(plane); outerFacesForEdges.push(plane.clone());
-                }
-            });
-        }
-        const finalBlockGeo = BufferGeometryUtils.mergeGeometries(dirGeos.map(geos => geos.length > 0 ? BufferGeometryUtils.mergeGeometries(geos) : new THREE.BufferGeometry()), true);
-        const blockMesh = new THREE.Mesh(finalBlockGeo, blockMaterials);
-        blockMesh.userData = { id: block.id };
-        blockMesh.renderOrder = 10;  // 方块渲染优先级高于孔洞蓝线（renderOrder=5）
-        blockMesh.castShadow = true;
-        blockMesh.receiveShadow = true;
-        group.add(blockMesh);
-        const edgeGeo = new THREE.EdgesGeometry(BufferGeometryUtils.mergeVertices(BufferGeometryUtils.mergeGeometries(outerFacesForEdges)), 1);
-        const outlineMesh = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }));
-        outlineMesh.renderOrder = 10;
-        (outlineMesh.material as THREE.LineBasicMaterial).polygonOffset = true;
-        (outlineMesh.material as THREE.LineBasicMaterial).polygonOffsetFactor = -1;
-        (outlineMesh.material as THREE.LineBasicMaterial).polygonOffsetUnits = -1;
-        if (block.type !== 'wall') group.add(outlineMesh);
+        const edgeGeometry = new THREE.EdgesGeometry(geometry, 1);
+        const edges = new THREE.LineSegments(edgeGeometry, new THREE.LineBasicMaterial({
+            color: 0xadc1cf, transparent: true, opacity: 0.28, depthWrite: false,
+        }));
+        edges.renderOrder = block.type === 'wall' ? 2 : 10;
+        if (block.type !== 'wall') group.add(edges);
+        // Keep the unused outline owned by the group for deterministic disposal.
+        else { edges.visible = false; group.add(edges); }
         group.position.set(block.position.x, block.position.y, block.position.z);
         scene.add(group);
-
-        let ghostGroup: THREE.Group | undefined;
+        let ghost: THREE.Group | undefined;
         if (block.type === 'target' && block.targetPosition) {
-            ghostGroup = new THREE.Group();
-            const ghostMat = new THREE.LineDashedMaterial({ color: 0x00FF00, dashSize: 0.2, gapSize: 0.1, depthTest: false, transparent: true, opacity: 0.8 });
-            const ghostOutline = new THREE.LineSegments(edgeGeo, ghostMat);
-            ghostOutline.computeLineDistances(); ghostOutline.renderOrder = 999;
-            ghostGroup.add(ghostOutline);
-            ghostGroup.position.set(block.targetPosition.x, block.targetPosition.y, block.targetPosition.z);
-            ghostGroup.visible = false;
-            scene.add(ghostGroup);
+            ghost = new THREE.Group();
+            // The target is a navigation aid: keep it legible even behind other blocks.
+            for (const hidden of [true, false]) {
+                const line = new THREE.LineSegments(edgeGeometry, new THREE.LineDashedMaterial({
+                    color: 0x00ff00, dashSize: 0.2, gapSize: 0.1,
+                    transparent: true, opacity: 0.8,
+                    depthTest: true, depthWrite: false, depthFunc: hidden ? THREE.GreaterDepth : THREE.LessEqualDepth,
+                }));
+                line.computeLineDistances(); line.renderOrder = 1001;
+                ghost.add(line);
+            }
+            ghost.position.set(block.targetPosition.x, block.targetPosition.y, block.targetPosition.z);
+            ghost.visible = false; scene.add(ghost);
         }
-        blockMeshes.set(block.id, { group, materials: blockMaterials, edges: outlineMesh, ghost: ghostGroup });
+        result.set(block.id, { group, body, materials, edges, ghost, baseColors, hoveredFace: null });
     }
-
-    return blockMeshes;
+    return result;
 }
 
-// 重置所有方块的 hover 高亮
-export function resetHover(blockMeshes: Map<string, BlockMeshData>) {
-    blockMeshes.forEach(d => d.materials.forEach(m => m.emissive.setHex(0x000000)));
+export function resetHover(blocks: Map<string, BlockMeshData>): void {
+    blocks.forEach(d => {
+        if (d.hoveredFace === null) return;
+        const attribute = d.body.geometry.getAttribute('hoverEmission') as THREE.BufferAttribute;
+        attribute.array.fill(0); attribute.needsUpdate = true; d.hoveredFace = null;
+    });
 }
 
-// 更新选中方块的视觉表现
-export function updateSelectionVisuals(blockMeshes: Map<string, BlockMeshData>, selectedBlockId: string | null) {
-    blockMeshes.forEach((data, id) => {
-        const isSelected = id === selectedBlockId;
-        const edgeMat = data.edges.material as THREE.LineBasicMaterial;
-        if (isSelected) { edgeMat.color.setHex(0x00FFFF); data.edges.renderOrder = 1000; edgeMat.opacity = 1.0; }
-        else { edgeMat.color.setHex(0xFFFFFF); data.edges.renderOrder = 10; edgeMat.opacity = 0.9; }
-        if (data.ghost) data.ghost.visible = isSelected;
+export function setFaceHover(data: BlockMeshData, face: number, allowed: boolean): void {
+    const geometry = data.body.geometry, group = geometry.groups[face];
+    const colors = geometry.getAttribute('hoverEmission') as THREE.BufferAttribute;
+    const color = new THREE.Color(allowed ? 0x888888 : 0x880000);
+    for (let i = group.start; i < group.start + group.count; i++) {
+        const vertex = geometry.index!.getX(i);
+        colors.setXYZ(vertex, color.r, color.g, color.b);
+    }
+    colors.needsUpdate = true; data.hoveredFace = face;
+}
+
+export function updateSelectionVisuals(blocks: Map<string, BlockMeshData>, selected: string | null): void {
+    blocks.forEach((d, id) => {
+        const active = id === selected;
+        const mat = d.edges.material as THREE.LineBasicMaterial;
+        const wall = d.body.userData.blockType === 'wall';
+        mat.color.setHex(active ? 0x00ffff : 0xadc1cf); mat.opacity = active ? 1 : 0.28;
+        d.edges.renderOrder = active ? 1000 : wall ? 2 : 10;
+        if (d.ghost) d.ghost.visible = active;
     });
 }
